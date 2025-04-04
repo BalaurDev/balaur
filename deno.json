@@ -2,7 +2,7 @@
   "tasks": {
     "dev": "deno run --watch apps/todo/app.ts",
     "start": "deno run --allow-all apps/todo/app.ts",
-    "mcp": "deno run --allow-read --allow-write --allow-env --unstable --allow-net framework/mcp_server.ts",
+    "mcp": "deno run --allow-read --allow-write --allow-env --allow-net framework/mcp_server.ts",
     "test": "deno test --allow-all",
     "test:framework": "deno test --allow-all framework/framework_test.ts",
     "test:todo": "deno test --allow-all apps/todo/app_test.ts"
