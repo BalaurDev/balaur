@@ -79,6 +79,10 @@ export class Resource {
     return { ...this._links };
   }
 
+  clearLinks(): void {
+    this._links = {};
+  }
+
   addEmbedded(rel: string, resource: Resource): void {
     if (!this._embedded[rel]) {
       this._embedded[rel] = [];

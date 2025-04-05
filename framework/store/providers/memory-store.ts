@@ -1,5 +1,5 @@
-import { StorageProvider, ResourceStorageOptions } from "./storage-interface.ts";
-import { Resource } from "../core/resource.ts";
+import { StorageProvider, ResourceStorageOptions } from "../interface/storage-interface.ts";
+import { Resource } from "../../core/resource.ts";
 
 export class MemoryStore implements StorageProvider<Resource> {
   private store: Map<string, Resource> = new Map();

@@ -1,6 +1,6 @@
 import { Resource } from "../core/resource.ts";
-import { StorageProvider } from "./storage-interface.ts";
-import { StorageFactory, StorageConfig } from "./storage-factory.ts";
+import { StorageProvider } from "./interface/storage-interface.ts";
+import { StorageFactory, StorageConfig } from "./factory/storage-factory.ts";
 
 export class ResourceStore {
   private storage!: StorageProvider<Resource>;

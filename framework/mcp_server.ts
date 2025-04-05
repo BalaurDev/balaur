@@ -1,62 +1,105 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ResourceStore, Resource, StorageConfig } from "./mod.ts";
-import { ZodError, z } from "npm:zod@3.24.2"; // Import Zod for validation
+import { McpServer, McpToolResult } from "jsr:@mcp/server";
+import { ResourceStore, Resource, StorageConfig, Link } from "./mod.ts";
+import { ZodError, z, ZodIssue } from "jsr:@zod/zod@^3.24.2";
+
+// --- Custom Error Classes ---
+class ResourceNotFoundError extends Error {
+  constructor(type: string, id: string) {
+    super(`Resource ${type}/${id} not found.`);
+    this.name = 'ResourceNotFoundError';
+  }
+}
+
+class McpToolExecutionError extends Error {
+  constructor(toolName: string, originalError: unknown) {
+    const message = originalError instanceof Error ? originalError.message : String(originalError);
+    super(`Error executing MCP tool '${toolName}': ${message}`);
+    this.name = 'McpToolExecutionError';
+    // Optionally store the original error for debugging
+    // this.cause = originalError;
+  }
+}
 
 // --- Zod Schema (Shared for Resource Input/Validation) ---
+const linkSchema = z.object({
+    href: z.string().url(),
+    method: z.string().optional(),
+    title: z.string().optional(),
+    templated: z.boolean().optional(),
+});
+
 const resourceSchema = z.object({
-    type: z.string().min(1),
-    id: z.string().min(1),
+    type: z.string().min(1, "Resource type cannot be empty"),
+    id: z.string().min(1, "Resource ID cannot be empty"),
     properties: z.record(z.unknown()).optional(),
-    links: z.record(z.object({ href: z.string() })).optional(), 
+    links: z.record(linkSchema).optional(),
     state: z.string().optional(),
 });
 
-// --- Tool Handlers (Exported for testing, adapted return values) ---
+type ParsedResourceData = z.infer<typeof resourceSchema>;
 
-// Takes store as an argument
-export async function handleGetResource(store: ResourceStore, params: { type: string; id: string }) {
+// --- Tool Handlers (with explicit types and custom errors) ---
+
+/**
+ * MCP Tool Handler: Retrieves a resource by type and ID.
+ * @param store The resource store instance.
+ * @param params Object containing the resource type and ID.
+ * @returns A promise resolving to an McpToolResult.
+ */
+export async function handleGetResource(
+    store: ResourceStore,
+    params: { type: string; id: string }
+): Promise<McpToolResult> {
     console.error(`MCP Server: Handling getResource(${params.type}, ${params.id})`);
     try {
         const resource = await store.getResource(params.type, params.id);
         if (!resource) {
-            // Return MCP ToolResult format for not found
-            return { content: [{ type: "text" as const, text: `Resource ${params.type}/${params.id} not found.` }], isError: true };
+            throw new ResourceNotFoundError(params.type, params.id);
         }
         console.error(`MCP Server: Resource ${params.type}/${params.id} found.`);
-        // Wrap result in MCP ToolResult format
-        return { content: [{ type: "text" as const, text: JSON.stringify(resource.toJSON(), null, 2) }] }; 
+        return { content: [{ type: "text", text: JSON.stringify(resource.toJSON(), null, 2) }] };
     } catch (error) {
         console.error(`MCP Server: Error in getResource: ${error}`);
-        const message = error instanceof Error ? error.message : String(error);
-        // Return error in MCP ToolResult format
-        return { content: [{ type: "text" as const, text: `Failed to get resource: ${message}` }], isError: true };
+        const toolError = new McpToolExecutionError("getResource", error);
+        return { content: [{ type: "text", text: toolError.message }], isError: true };
     }
 }
 
-export async function handleListResources(store: ResourceStore, params: { type: string }) {
+/**
+ * MCP Tool Handler: Lists resources of a specific type.
+ * @param store The resource store instance.
+ * @param params Object containing the resource type.
+ * @returns A promise resolving to an McpToolResult.
+ */
+export async function handleListResources(
+    store: ResourceStore,
+    params: { type: string }
+): Promise<McpToolResult> {
     console.error(`MCP Server: Handling listResources(${params.type})`);
     try {
         const resources = await store.listResources(params.type);
         console.error(`MCP Server: Found ${resources.length} resources of type ${params.type}.`);
-        // Wrap result in MCP ToolResult format
-        return { content: [{ type: "text" as const, text: JSON.stringify(resources.map(r => r.toJSON()), null, 2) }] };
+        return { content: [{ type: "text", text: JSON.stringify(resources.map(r => r.toJSON()), null, 2) }] };
     } catch (error) {
         console.error(`MCP Server: Error in listResources: ${error}`);
-        const message = error instanceof Error ? error.message : String(error);
-        // Return error in MCP ToolResult format
-        return { content: [{ type: "text" as const, text: `Failed to list resources: ${message}` }], isError: true };
+        const toolError = new McpToolExecutionError("listResources", error);
+        return { content: [{ type: "text", text: toolError.message }], isError: true };
     }
 }
 
-// Modify handleCreateResource to accept parsed data directly
-// Define an inferred type for the parsed data based on resourceSchema
-type ParsedResourceData = z.infer<typeof resourceSchema>;
-
-export async function handleCreateResource(store: ResourceStore, parsedData: ParsedResourceData) {
+/**
+ * MCP Tool Handler: Creates a new resource.
+ * @param store The resource store instance.
+ * @param parsedData Validated resource data conforming to ParsedResourceData.
+ * @returns A promise resolving to an McpToolResult.
+ */
+export async function handleCreateResource(
+    store: ResourceStore,
+    parsedData: ParsedResourceData
+): Promise<McpToolResult> {
     console.error(`MCP Server: Handling createResource`);
     try {
-        // Data is already validated by server.tool using the schema
-        // Use parsedData directly
+        // Data is already validated by McpServer.tool using the schema
         const newResource = new Resource({
             type: parsedData.type,
             id: parsedData.id,
@@ -65,37 +108,42 @@ export async function handleCreateResource(store: ResourceStore, parsedData: Par
         });
         if (parsedData.links) {
             for (const [rel, link] of Object.entries(parsedData.links)) {
-                newResource.addLink(rel, { href: link.href }); 
+                newResource.addLink(rel, link as Link);
             }
         }
         await store.createResource(newResource);
         console.error(`MCP Server: Resource ${parsedData.type}/${parsedData.id} created.`);
-        // Wrap result in MCP ToolResult format
-        return { content: [{ type: "text" as const, text: JSON.stringify(newResource.toJSON(), null, 2) }] }; 
+        return { content: [{ type: "text", text: JSON.stringify(newResource.toJSON(), null, 2) }] };
     } catch (error) {
-        // ZodError should ideally be caught by McpServer.tool, but keep check just in case
         console.error(`MCP Server: Error in handleCreateResource: ${error}`);
-        let message: string;
-        if (error instanceof ZodError) { 
-             message = `Invalid resource data passed to handler: ${error.errors.map(e => e.message).join(', ')}`;
+         // ZodErrors should be caught by McpServer, this is a fallback.
+        let toolError: McpToolExecutionError;
+        if (error instanceof ZodError) {
+             const message = `Invalid resource data passed to handler: ${error.errors.map((e: ZodIssue) => e.message).join(', ')}`;
+             toolError = new McpToolExecutionError("createResource", new Error(message));
         } else {
-            message = error instanceof Error ? error.message : String(error);
+            toolError = new McpToolExecutionError("createResource", error);
         }
-        // Return error in MCP ToolResult format
-        return { content: [{ type: "text" as const, text: `Failed to create resource: ${message}` }], isError: true };
+        return { content: [{ type: "text", text: toolError.message }], isError: true };
     }
 }
 
-// Modify handleUpdateResource to accept parsed data directly
-export async function handleUpdateResource(store: ResourceStore, parsedData: ParsedResourceData) {
+/**
+ * MCP Tool Handler: Updates an existing resource.
+ * @param store The resource store instance.
+ * @param parsedData Validated resource data conforming to ParsedResourceData.
+ * @returns A promise resolving to an McpToolResult.
+ */
+export async function handleUpdateResource(
+    store: ResourceStore,
+    parsedData: ParsedResourceData
+): Promise<McpToolResult> {
     console.error(`MCP Server: Handling updateResource`);
      try {
-        // Data is already validated by server.tool using the schema
-        // Use parsedData directly
+        // Data is already validated by McpServer.tool using the schema
         const existingResource = await store.getResource(parsedData.type, parsedData.id);
         if (!existingResource) {
-            // Return MCP ToolResult format for not found
-            return { content: [{ type: "text" as const, text: `Resource ${parsedData.type}/${parsedData.id} not found for update.` }], isError: true };
+             throw new ResourceNotFoundError(parsedData.type, parsedData.id);
         }
 
         if (parsedData.properties) {
@@ -103,126 +151,133 @@ export async function handleUpdateResource(store: ResourceStore, parsedData: Par
                 existingResource.setProperty(key, value);
             }
         }
-        if (parsedData.state) existingResource.setState(parsedData.state);
-        
-        (existingResource as any)._links = {}; 
+        if (parsedData.state !== undefined) {
+             existingResource.setState(parsedData.state);
+        }
+
+        existingResource.clearLinks();
         if (parsedData.links) {
             for (const [rel, link] of Object.entries(parsedData.links)) {
-                existingResource.addLink(rel, { href: link.href });
+                 existingResource.addLink(rel, link as Link);
             }
         }
-        
+
         await store.updateResource(existingResource);
         console.error(`MCP Server: Resource ${parsedData.type}/${parsedData.id} updated.`);
-        // Wrap result in MCP ToolResult format
-        return { content: [{ type: "text" as const, text: JSON.stringify(existingResource.toJSON(), null, 2) }] }; 
+        return { content: [{ type: "text", text: JSON.stringify(existingResource.toJSON(), null, 2) }] };
     } catch (error) {
         console.error(`MCP Server: Error in handleUpdateResource: ${error}`);
-        let message: string;
-        if (error instanceof ZodError) { 
-             message = `Invalid resource data passed to handler: ${error.errors.map(e => e.message).join(', ')}`;
+        // ZodErrors should be caught by McpServer, this is a fallback.
+        let toolError: McpToolExecutionError;
+        if (error instanceof ZodError) {
+             const message = `Invalid resource data passed to handler: ${error.errors.map((e: ZodIssue) => e.message).join(', ')}`;
+             toolError = new McpToolExecutionError("updateResource", new Error(message));
         } else {
-            message = error instanceof Error ? error.message : String(error);
+            toolError = new McpToolExecutionError("updateResource", error);
         }
-        // Return error in MCP ToolResult format
-        return { content: [{ type: "text" as const, text: `Failed to update resource: ${message}` }], isError: true };
+        return { content: [{ type: "text", text: toolError.message }], isError: true };
     }
 }
 
-export async function handleDeleteResource(store: ResourceStore, params: { type: string; id: string }) {
+/**
+ * MCP Tool Handler: Deletes a resource by type and ID.
+ * @param store The resource store instance.
+ * @param params Object containing the resource type and ID.
+ * @returns A promise resolving to an McpToolResult.
+ */
+export async function handleDeleteResource(
+    store: ResourceStore,
+    params: { type: string; id: string }
+): Promise<McpToolResult> {
     console.error(`MCP Server: Handling deleteResource(${params.type}, ${params.id})`);
     try {
         const deleted = await store.deleteResource(params.type, params.id);
-        console.error(`MCP Server: Resource ${params.type}/${params.id} deletion result: ${deleted}.`);
-        // Return success/failure message in MCP ToolResult format
-        const message = deleted ? `Successfully deleted resource ${params.type}/${params.id}.` : `Resource ${params.type}/${params.id} not found or could not be deleted.`;
-        return { content: [{ type: "text" as const, text: message }], isError: !deleted }; 
+        if (!deleted) {
+            throw new ResourceNotFoundError(params.type, params.id);
+        }
+        console.error(`MCP Server: Resource ${params.type}/${params.id} deleted successfully.`);
+        const message = `Successfully deleted resource ${params.type}/${params.id}.`;
+        return { content: [{ type: "text", text: message }] };
     } catch (error) {
         console.error(`MCP Server: Error in deleteResource: ${error}`);
-        const message = error instanceof Error ? error.message : String(error);
-        // Return error in MCP ToolResult format
-        return { content: [{ type: "text" as const, text: `Failed to delete resource: ${message}` }], isError: true };
+        const toolError = new McpToolExecutionError("deleteResource", error);
+        return { content: [{ type: "text", text: toolError.message }], isError: true };
     }
 }
 
-// --- Main Server Logic (IIFE or similar if run directly) ---
-
-async function main() {
+/**
+ * Initializes and starts the Balaur MCP Server.
+ * Configures storage, registers tools, and connects to the transport layer.
+ */
+async function main(): Promise<void> {
     // Configure storage (defaulting to in-memory if Deno KV fails)
     let storageConfig: StorageConfig = { type: "deno-kv" };
-    
     let store = new ResourceStore(storageConfig);
-    
+
     try {
         await store.initialize();
         console.error("MCP Server: Initialized with Deno KV store");
     } catch (error) {
         console.error(`MCP Server: Failed to initialize Deno KV: ${error instanceof Error ? error.message : String(error)}`);
         console.error("MCP Server: Falling back to in-memory store");
-        
+
         // Re-initialize with memory store
         storageConfig = { type: "memory" };
         store = new ResourceStore(storageConfig);
         await store.initialize();
+        console.error("MCP Server: Initialized with In-Memory store.");
     }
-    
-    console.error("MCP Server: Initializing (In-Memory Store)...");
 
     // --- Server Setup ---
     console.error("MCP Server: Creating McpServer instance...");
     const server = new McpServer({
-        name: "BalaurFrameworkServer", 
-        version: "0.1.0" // Example version
+        name: "BalaurFrameworkServer",
+        version: "0.1.0"
     });
 
     // Register tools directly using server.tool(name, zodSchemaShape, handler)
     console.error("MCP Server: Registering tools...");
 
     server.tool("getResource",
-        { type: z.string(), id: z.string() }, // Pass the raw shape object
-        (params) => handleGetResource(store, params) 
+        z.object({ type: z.string(), id: z.string() }).shape,
+        (params: { type: string; id: string }) => handleGetResource(store, params)
     );
 
     server.tool("listResources",
-        { type: z.string() }, // Pass the raw shape object
-        (params) => handleListResources(store, params)
+        z.object({ type: z.string() }).shape,
+        (params: { type: string }) => handleListResources(store, params)
     );
 
-    // For create/update, the handler expects { resourceData: unknown }
-    // The server.tool schema likely defines the structure *within* resourceData
-    // Let's assume the SDK flattens the 'resourceData' object for the handler
-    // OR maybe the handler needs adjustment? Let's try passing resourceSchema directly
-    // This might require handler adjustments later if the SDK passes params differently.
     server.tool("createResource",
-        resourceSchema.shape, // Pass the raw shape from the Zod object
-        (parsedData) => handleCreateResource(store, parsedData)
+        resourceSchema,
+        (parsedData: ParsedResourceData) => handleCreateResource(store, parsedData)
     );
 
      server.tool("updateResource",
-        resourceSchema.shape, // Pass the raw shape from the Zod object
-        (parsedData) => handleUpdateResource(store, parsedData)
+        resourceSchema,
+        (parsedData: ParsedResourceData) => handleUpdateResource(store, parsedData)
     );
 
     server.tool("deleteResource",
-        { type: z.string(), id: z.string() }, // Pass the raw shape object
-        (params) => handleDeleteResource(store, params)
+        z.object({ type: z.string(), id: z.string() }).shape,
+        (params: { type: string; id: string }) => handleDeleteResource(store, params)
     );
 
     // --- Transport Setup ---
     console.error("MCP Server: Setting up Stdio transport...");
-    // Dynamically import transport to avoid potential top-level await issues if any
-    const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
+    const { StdioServerTransport } = await import("jsr:@mcp/server/stdio");
     const transport = new StdioServerTransport();
 
     Deno.addSignalListener("SIGINT", async () => {
         console.error("\nMCP Server: SIGINT received, closing store...");
         await store.close();
+        console.error("MCP Server: Store closed. Exiting.");
         Deno.exit(0);
     });
 
     console.error("MCP Server: Connecting server to transport (starting listener)...");
-    await server.connect(transport); // McpServer uses connect instead of listen
-    
+    await server.connect(transport);
+
     console.error("MCP Server: Initialization complete. Waiting for client connections via stdio.");
 }
 
