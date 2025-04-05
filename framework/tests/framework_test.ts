@@ -3,7 +3,7 @@
  */
 
 import { assertEquals, assertNotEquals } from "@std/assert";
-import { Resource, ResourceStore } from "./mod.ts";
+import { Resource, ResourceStore } from "../mod.ts";
 
 // Tests for Resource class
 Deno.test("Resource - Basic properties", () => {
