@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "balaur_todo": {
+      "command": "deno",
+      "args": [
+        "run", 
+        "--allow-read", 
+        "--allow-write", 
+        "--allow-env", 
+        "--allow-net", 
+        "D:\\Personal\\Balaur\\apps\\todo\\mcp_server_todo.ts"
+      ],
+      "cwd": "D:\\Personal\\Balaur"
+    }
+  }
+} 

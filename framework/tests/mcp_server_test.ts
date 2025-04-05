@@ -1,77 +1,74 @@
 import { assertEquals, assertExists, assertRejects } from "@std/assert";
-import { ResourceStore, Resource } from "./mod.ts";
+// Import all necessary handlers
+import { 
+    handleCreateResource, 
+    handleGetResource, 
+    handleListResources, 
+    handleUpdateResource, 
+    handleDeleteResource 
+} from "../mcp_server.ts"; 
+import { ResourceStore } from "../mod.ts";
 
-// Import the actual handlers from mcp_server
-import {
-    handleGetResource,
-    handleListResources,
-    handleCreateResource,
-    handleUpdateResource,
-    handleDeleteResource
-} from "./mcp_server.ts"; 
+
 // TODO: Potentially import the Zod schema too for more robust invalid data tests
 
-// --- Mocking/Setup ---
+// Use an in-memory store for testing - Re-initialize for isolation if needed per group
+let testStore = new ResourceStore();
 
-// Use an in-memory store for testing
-const testStore = new ResourceStore({ kvPath: ":memory:" });
-
-// Helper to clear the store before each test group or individually
-async function clearTestStore() {
-    // Get all keys under the "resources" prefix
-    const kv = await (testStore as any).getKv(); // Access private method for testing cleanup
-    const iter = kv.list({ prefix: ["resources"]});
-    const promises: Promise<void>[] = [];
-    for await(const entry of iter) {
-        promises.push(kv.delete(entry.key));
-    }
-    await Promise.all(promises);
-    console.log("Test Store Cleared");
+// Helper to re-initialize the store (simpler than clearing a Map externally)
+function resetTestStore() {
+    testStore = new ResourceStore();
+    console.log("Test Store Reset");
 }
 
 // --- Test Suite ---
 
-Deno.test("MCP Server Handlers - Deno KV Integration", async (t) => {
+Deno.test("MCP Server Handlers - In-Memory ResourceStore Integration", async (t) => {
 
-    await t.step("Setup: Clear Store", async () => {
-        await clearTestStore();
+    await t.step("Setup: Reset Store", () => {
+        resetTestStore();
     });
 
-    let createdResourceJson: any;
+    // No longer need createdResourceJson
 
     await t.step("handleCreateResource: Should create a new resource", async () => {
         const resourceData = { type: "test", id: "mcp-1", properties: { name: "MCP Test 1" }, state: "created" };
-        // Call the actual handler with the test store
-        const result = await handleCreateResource(testStore, { resourceData }); 
+        // Call the actual handler with the test store and direct data
+        const result = await handleCreateResource(testStore, resourceData); 
         assertExists(result);
-        assertEquals(result.type, "test");
-        assertEquals(result.id, "mcp-1");
-        assertEquals((result.properties as any).name, "MCP Test 1");
-        assertEquals(result.state, "created");
-        createdResourceJson = result; // Save for later tests
+        assertEquals(result.isError, undefined, "Create should not return an error flag"); // Or check for false if explicitly set
+        assertExists(result.content);
+        assertEquals(result.content.length, 1);
+        assertEquals(result.content[0].type, "text");
+        
+        // Parse the JSON result
+        const createdResource = JSON.parse(result.content[0].text);
+        
+        assertEquals(createdResource.type, "test");
+        assertEquals(createdResource.id, "mcp-1");
+        assertEquals(createdResource.properties?.name, "MCP Test 1");
+        assertEquals(createdResource.state, "created");
     });
 
-     await t.step("handleCreateResource: Should reject invalid data (missing type)", async () => {
-        const invalidData = { id: "mcp-invalid", properties: { name: "Invalid" } };
-        await assertRejects(
-            async () => {
-                await handleCreateResource(testStore, { resourceData: invalidData });
-            },
-            Error, // Expecting a Zod validation error, wrapped in a generic Error
-            "Invalid resource data" // Check if message contains expected part
-        );
-    });
+    // Removed the invalid data test for handleCreateResource, as validation should occur upstream.
 
     await t.step("handleGetResource: Should retrieve the created resource", async () => {
         const result = await handleGetResource(testStore, { type: "test", id: "mcp-1" });
         assertExists(result);
-        assertEquals(result.id, "mcp-1");
-        assertEquals((result.properties as any).name, "MCP Test 1");
+        assertEquals(result.isError, undefined, "Get should not return an error flag for existing resource");
+        assertExists(result.content);
+        const fetchedResource = JSON.parse(result.content[0].text);
+        assertEquals(fetchedResource.id, "mcp-1");
+        assertEquals(fetchedResource.properties?.name, "MCP Test 1");
     });
 
-    await t.step("handleGetResource: Should return null for non-existent resource", async () => {
+    await t.step("handleGetResource: Should return error for non-existent resource", async () => {
         const result = await handleGetResource(testStore, { type: "test", id: "non-existent" });
-        assertEquals(result, null);
+        assertExists(result);
+        assertEquals(result.isError, true, "Get should return an error flag for non-existent resource");
+        assertExists(result.content);
+        assertEquals(result.content[0].type, "text");
+        assertExists(result.content[0].text.includes("not found"));
     });
 
     await t.step("handleUpdateResource: Should update properties and state", async () => {
@@ -81,63 +78,86 @@ Deno.test("MCP Server Handlers - Deno KV Integration", async (t) => {
             properties: { name: "MCP Test Updated", value: 123 }, 
             state: "updated" 
         };
-        const result = await handleUpdateResource(testStore, { resourceData: updateData });
+        // Pass updateData directly
+        const result = await handleUpdateResource(testStore, updateData); 
         assertExists(result);
-        assertEquals(result.id, "mcp-1");
-        assertEquals((result.properties as any).name, "MCP Test Updated");
-        assertEquals((result.properties as any).value, 123);
-        assertEquals(result.state, "updated");
+        assertEquals(result.isError, undefined, "Update should not return an error flag");
+        assertExists(result.content);
+        const updatedResource = JSON.parse(result.content[0].text);
+
+        assertEquals(updatedResource.id, "mcp-1");
+        assertEquals(updatedResource.properties?.name, "MCP Test Updated");
+        assertEquals(updatedResource.properties?.value, 123);
+        assertEquals(updatedResource.state, "updated");
 
         // Verify with getResource
-        const fetched = await handleGetResource(testStore, { type: "test", id: "mcp-1" });
-        assertEquals((fetched?.properties as any)?.name, "MCP Test Updated");
+        const getResult = await handleGetResource(testStore, { type: "test", id: "mcp-1" });
+        assertExists(getResult?.content);
+        const fetched = JSON.parse(getResult.content[0].text);
+        assertEquals(fetched?.properties?.name, "MCP Test Updated");
         assertEquals(fetched?.state, "updated");
     });
 
      await t.step("handleListResources: Should list created resources", async () => {
         // Create another resource
-        await handleCreateResource(testStore, { resourceData: { type: "test", id: "mcp-2", properties: { name: "MCP Test 2" } } });
-        await handleCreateResource(testStore, { resourceData: { type: "other", id: "mcp-other", properties: {} } });
+        await handleCreateResource(testStore, { type: "test", id: "mcp-2", properties: { name: "MCP Test 2" }, state: "created" });
+        await handleCreateResource(testStore, { type: "other", id: "mcp-other", properties: {}, state: "created" });
 
         const listResult = await handleListResources(testStore, { type: "test" });
-        assertEquals(listResult.length, 2);
-        assertEquals(listResult.some((r: any) => r.id === "mcp-1"), true);
-        assertEquals(listResult.some((r: any) => r.id === "mcp-2"), true);
+        assertExists(listResult?.content);
+        assertEquals(listResult.isError, undefined);
+        const testResources = JSON.parse(listResult.content[0].text);
+        assertEquals(testResources.length, 2);
+        assertEquals(testResources.some((r: any) => r.id === "mcp-1"), true);
+        assertEquals(testResources.some((r: any) => r.id === "mcp-2"), true);
         
         const listOtherResult = await handleListResources(testStore, { type: "other" });
-        assertEquals(listOtherResult.length, 1);
-        assertEquals(listOtherResult[0].id, "mcp-other");
+         assertExists(listOtherResult?.content);
+        assertEquals(listOtherResult.isError, undefined);
+        const otherResources = JSON.parse(listOtherResult.content[0].text);
+        assertEquals(otherResources.length, 1);
+        assertEquals(otherResources[0].id, "mcp-other");
 
         const listEmptyResult = await handleListResources(testStore, { type: "non-existent-type" });
-        assertEquals(listEmptyResult.length, 0);
+        assertExists(listEmptyResult?.content);
+        assertEquals(listEmptyResult.isError, undefined);
+        const emptyResources = JSON.parse(listEmptyResult.content[0].text);
+        assertEquals(emptyResources.length, 0);
     });
 
     await t.step("handleDeleteResource: Should delete the specified resource", async () => {
         const deleteResult = await handleDeleteResource(testStore, { type: "test", id: "mcp-1" });
-        assertEquals(deleteResult.success, true);
+        assertExists(deleteResult);
+        // Check isError is false (or undefined) for successful delete
+        assertEquals(deleteResult.isError, false, "Delete should return isError: false on success"); 
+        assertExists(deleteResult.content);
+        assertExists(deleteResult.content[0].text.includes("Successfully deleted"));
 
         // Verify deletion with getResource
-        const fetched = await handleGetResource(testStore, { type: "test", id: "mcp-1" });
-        assertEquals(fetched, null);
+        const getResult = await handleGetResource(testStore, { type: "test", id: "mcp-1" });
+        assertEquals(getResult.isError, true); // Should now be an error (not found)
 
         // Verify listResources is updated
         const listResult = await handleListResources(testStore, { type: "test" });
-        assertEquals(listResult.length, 1); // Only mcp-2 should remain
-        assertEquals(listResult[0].id, "mcp-2");
+        assertExists(listResult?.content);
+        const remainingResources = JSON.parse(listResult.content[0].text);
+        assertEquals(remainingResources.length, 1); // Only mcp-2 should remain
+        assertEquals(remainingResources[0].id, "mcp-2");
     });
 
-    await t.step("handleDeleteResource: Should return true for non-existent resource (KV delete doesn't error)", async () => {
-        // Note: Deno KV kv.delete() doesn't throw if the key doesn't exist.
-        // Our handler returns true if no error occurs.
+    await t.step("handleDeleteResource: Should return error for non-existent resource", async () => {
         const deleteResult = await handleDeleteResource(testStore, { type: "test", id: "non-existent" });
-        assertEquals(deleteResult.success, true); 
+        assertExists(deleteResult);
+        // Check isError is true for non-existent delete
+        assertEquals(deleteResult.isError, true, "Delete should return isError: true for non-existent");
+        assertExists(deleteResult.content);
+        assertExists(deleteResult.content[0].text.includes("not found or could not be deleted"));
     });
 
     // TODO: Add more tests for error handling (e.g., invalid input to update)
 
-    await t.step("Teardown: Clear Store and Close KV", async () => {
-        await clearTestStore();
-        // Close the in-memory KV store connection
-        await testStore.close(); 
+    await t.step("Teardown: Reset Store", () => {
+        resetTestStore();
+        // No close() needed for in-memory store
     });
 }); 

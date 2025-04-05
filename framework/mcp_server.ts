@@ -199,7 +199,6 @@ async function main() {
 
     Deno.addSignalListener("SIGINT", async () => {
         console.error("\nMCP Server: SIGINT received, closing store...");
-        await store.close(); // Close the Map store (no-op)
         // Consider closing transport if needed? SDK might handle it.
         Deno.exit(0);
     });

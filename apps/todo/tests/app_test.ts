@@ -3,8 +3,7 @@
  */
 
 import { assertEquals, assertNotEquals } from "@std/assert";
-import { Resource } from "../../framework/mod.ts";
-import { createTask, createTaskCollection } from "./helpers.ts";
+import { createTask, createTaskCollection } from "../helpers.ts";
 
 // Test createTask helper
 Deno.test("createTask - Creates properly structured task", () => {

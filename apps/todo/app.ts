@@ -6,7 +6,8 @@
 import { ResourceStore, VERSION } from "../../framework/mod.ts";
 import { createTask, createTaskCollection } from "./helpers.ts";
 
-class TodoApp {
+// Export the class
+export class TodoApp {
   private store: ResourceStore;
 
   constructor() {

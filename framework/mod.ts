@@ -10,4 +10,4 @@ export * from "./core/resource.ts";
 export * from "./store/resource-store.ts";
 
 // Framework version
-export const VERSION = "1.0.0"; 
+export const VERSION = "0.0.1"; 
