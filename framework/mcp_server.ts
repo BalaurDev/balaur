@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ResourceStore, Resource } from "./mod.ts";
+import { ResourceStore, Resource, StorageConfig } from "./mod.ts";
 import { ZodError, z } from "npm:zod@3.24.2"; // Import Zod for validation
 
 // --- Zod Schema (Shared for Resource Input/Validation) ---
@@ -148,7 +148,24 @@ export async function handleDeleteResource(store: ResourceStore, params: { type:
 // --- Main Server Logic (IIFE or similar if run directly) ---
 
 async function main() {
-    const store = new ResourceStore(); 
+    // Configure storage (defaulting to in-memory if Deno KV fails)
+    let storageConfig: StorageConfig = { type: "deno-kv" };
+    
+    let store = new ResourceStore(storageConfig);
+    
+    try {
+        await store.initialize();
+        console.error("MCP Server: Initialized with Deno KV store");
+    } catch (error) {
+        console.error(`MCP Server: Failed to initialize Deno KV: ${error instanceof Error ? error.message : String(error)}`);
+        console.error("MCP Server: Falling back to in-memory store");
+        
+        // Re-initialize with memory store
+        storageConfig = { type: "memory" };
+        store = new ResourceStore(storageConfig);
+        await store.initialize();
+    }
+    
     console.error("MCP Server: Initializing (In-Memory Store)...");
 
     // --- Server Setup ---
@@ -199,7 +216,7 @@ async function main() {
 
     Deno.addSignalListener("SIGINT", async () => {
         console.error("\nMCP Server: SIGINT received, closing store...");
-        // Consider closing transport if needed? SDK might handle it.
+        await store.close();
         Deno.exit(0);
     });
 
